@@ -1,0 +1,249 @@
+// GoldenHour - relational schema
+// PostgreSQL + Prisma. Table names are lower_snake_case, which is the
+// PostgreSQL convention.
+//
+// Constraints that Prisma cannot express (CHECK rules, the partial unique index
+// that stops an ambulance holding two open assignments) are added in the
+// migration `integrity_constraints`.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  DISPATCHER
+  HOSPITAL
+  PATIENT
+}
+
+/// Declared in priority order: PostgreSQL compares enums by declaration order,
+/// so ORDER BY severity ASC puts CRITICAL before HIGH, MEDIUM and LOW.
+enum Severity {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum RequestStatus {
+  QUEUED
+  ASSIGNED
+  CLOSED
+}
+
+enum AmbulanceStatus {
+  AVAILABLE
+  BUSY
+  OFFLINE
+}
+
+model User {
+  userId       String   @id @map("user_id")
+  username     String   @unique @db.VarChar(60)
+  passwordHash String   @map("password_hash") @db.VarChar(100)
+  role         UserRole
+  hospitalId   String?  @map("hospital_id")
+  patientId    String?  @unique @map("patient_id") @db.VarChar(20)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  hospital  Hospital?         @relation(fields: [hospitalId], references: [hospitalId], onDelete: Restrict, onUpdate: Cascade)
+  patient   Patient?          @relation(fields: [patientId], references: [patientId], onDelete: Restrict, onUpdate: Cascade)
+  raised    EmergencyRequest[] @relation("RaisedBy")
+  campaigns Campaign[]        @relation("CampaignCreator")
+
+  @@index([hospitalId])
+  @@map("users")
+}
+
+model Hospital {
+  hospitalId String @id @map("hospital_id") @db.VarChar(20)
+  name       String @db.VarChar(120)
+  lat        Float
+  lon        Float
+  totalBeds  Int    @map("total_beds")
+  freeBeds   Int    @map("free_beds")
+
+  bloodStock    BloodStock[]
+  medicineStock MedicineStock[]
+  assignments   Assignment[]
+  staff         User[]
+  prebookings   Prebooking[]
+  campaigns     Campaign[]
+
+  @@map("hospital")
+}
+
+model BloodStock {
+  hospitalId String @map("hospital_id") @db.VarChar(20)
+  bloodGroup String @map("blood_group") @db.VarChar(3)
+  units      Int
+
+  hospital Hospital @relation(fields: [hospitalId], references: [hospitalId], onDelete: Cascade, onUpdate: Cascade)
+
+  @@id([hospitalId, bloodGroup])
+  @@index([bloodGroup])
+  @@map("blood_stock")
+}
+
+model MedicineStock {
+  hospitalId String @map("hospital_id") @db.VarChar(20)
+  medicine   String @db.VarChar(80)
+  units      Int
+
+  hospital Hospital @relation(fields: [hospitalId], references: [hospitalId], onDelete: Cascade, onUpdate: Cascade)
+
+  @@id([hospitalId, medicine])
+  @@index([medicine])
+  @@map("medicine_stock")
+}
+
+model Ambulance {
+  ambulanceId String          @id @map("ambulance_id") @db.VarChar(20)
+  regNo       String          @unique @map("reg_no") @db.VarChar(20)
+  lat         Float
+  lon         Float
+  status      AmbulanceStatus @default(AVAILABLE)
+
+  assignments Assignment[]
+
+  @@index([status])
+  @@map("ambulance")
+}
+
+model Patient {
+  patientId String @id @map("patient_id") @db.VarChar(20)
+  name      String @db.VarChar(100)
+  age       Int
+  contact   String @db.VarChar(10)
+
+  requests     EmergencyRequest[]
+  accounts     User[]
+  prebookings  Prebooking[]
+  campaignReads CampaignRead[]
+
+  @@map("patient")
+}
+
+model EmergencyRequest {
+  requestId        String        @id @map("request_id") @db.VarChar(20)
+  patientId        String        @map("patient_id") @db.VarChar(20)
+  raisedBy         String        @map("raised_by") @db.VarChar(20)
+  lat              Float
+  lon              Float
+  severity         Severity
+  bloodGroupNeeded String?       @map("blood_group_needed") @db.VarChar(3)
+  medicineNeeded   String?       @map("medicine_needed") @db.VarChar(80)
+  status           RequestStatus @default(QUEUED)
+  createdAt        DateTime      @default(now()) @map("created_at")
+
+  patient    Patient     @relation(fields: [patientId], references: [patientId], onDelete: Restrict, onUpdate: Cascade)
+  dispatcher User        @relation("RaisedBy", fields: [raisedBy], references: [userId], onDelete: Restrict, onUpdate: Cascade)
+  assignment Assignment?
+
+  @@index([status, severity, createdAt])
+  @@index([patientId])
+  @@index([raisedBy])
+  @@map("emergency_request")
+}
+
+enum PrebookingStatus {
+  PENDING
+  CONFIRMED
+  DECLINED
+  CANCELLED
+  CANCEL_REQUESTED
+  ADMITTED
+  DISCHARGED
+}
+
+enum CampaignType {
+  BLOOD_DONATION
+  ORGAN_DONATION
+}
+
+/// A patient's request to reserve a hospital bed in advance for a one-hour
+/// slot. Confirming reserves one free bed; the bed is released on discharge or
+/// when the hospital approves a cancellation request.
+model Prebooking {
+  prebookingId       String          @id @default(uuid()) @map("prebooking_id")
+  patientId          String          @map("patient_id") @db.VarChar(20)
+  hospitalId         String          @map("hospital_id") @db.VarChar(20)
+  reason             String          @db.VarChar(300)
+  slotStart          DateTime?       @map("slot_start")
+  slotEnd            DateTime?       @map("slot_end")
+  status             PrebookingStatus @default(PENDING)
+  createdAt          DateTime        @default(now()) @map("created_at")
+  decidedAt          DateTime?       @map("decided_at")
+  admittedAt         DateTime?       @map("admitted_at")
+  dischargedAt       DateTime?       @map("discharged_at")
+  cancellationReason String?         @map("cancellation_reason") @db.VarChar(300)
+
+  patient  Patient  @relation(fields: [patientId], references: [patientId], onDelete: Restrict, onUpdate: Cascade)
+  hospital Hospital @relation(fields: [hospitalId], references: [hospitalId], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([patientId, createdAt])
+  @@index([hospitalId, status])
+  @@index([hospitalId, slotStart])
+  @@map("prebooking")
+}
+
+/// A blood or organ donation camp published by a hospital. Patients see these
+/// in their notification feed and can mark each one read.
+model Campaign {
+  campaignId  String       @id @default(uuid()) @map("campaign_id")
+  hospitalId  String?      @map("hospital_id") @db.VarChar(20)
+  createdBy   String       @map("created_by") @db.VarChar(20)
+  type        CampaignType
+  title       String       @db.VarChar(120)
+  description String       @db.Text
+  location    String       @db.VarChar(160)
+  startsAt    DateTime     @map("starts_at")
+  createdAt   DateTime     @default(now()) @map("created_at")
+
+  hospital Hospital?      @relation(fields: [hospitalId], references: [hospitalId], onDelete: SetNull, onUpdate: Cascade)
+  creator  User           @relation("CampaignCreator", fields: [createdBy], references: [userId], onDelete: Restrict, onUpdate: Cascade)
+  reads    CampaignRead[]
+
+  @@index([startsAt])
+  @@index([type, startsAt])
+  @@map("campaign")
+}
+
+model CampaignRead {
+  campaignId String   @map("campaign_id")
+  patientId  String   @map("patient_id") @db.VarChar(20)
+  readAt     DateTime @default(now()) @map("read_at")
+
+  campaign Campaign @relation(fields: [campaignId], references: [campaignId], onDelete: Cascade, onUpdate: Cascade)
+  patient  Patient  @relation(fields: [patientId], references: [patientId], onDelete: Cascade, onUpdate: Cascade)
+
+  @@id([campaignId, patientId])
+  @@index([patientId])
+  @@map("campaign_read")
+}
+
+model Assignment {
+  assignmentId   String    @id @default(uuid()) @map("assignment_id")
+  requestId      String    @unique @map("request_id") @db.VarChar(20)
+  ambulanceId    String    @map("ambulance_id") @db.VarChar(20)
+  hospitalId     String    @map("hospital_id") @db.VarChar(20)
+  distanceKm     Decimal   @map("distance_km") @db.Decimal(6, 2)
+  readinessScore Int       @map("readiness_score")
+  partialFlag    Boolean   @default(false) @map("partial_flag")
+  reason         String    @db.Text
+  assignedAt     DateTime  @default(now()) @map("assigned_at")
+  closedAt       DateTime? @map("closed_at")
+
+  request   EmergencyRequest @relation(fields: [requestId], references: [requestId], onDelete: Restrict, onUpdate: Cascade)
+  ambulance Ambulance        @relation(fields: [ambulanceId], references: [ambulanceId], onDelete: Restrict, onUpdate: Cascade)
+  hospital  Hospital         @relation(fields: [hospitalId], references: [hospitalId], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([hospitalId, closedAt])
+  @@index([ambulanceId, closedAt])
+  @@map("assignment")
+}
