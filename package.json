@@ -1,0 +1,16 @@
+{
+  "name": "goldenhour-dispatch-logic",
+  "version": "1.0.0",
+  "description": "Severity ranking, hospital readiness scoring and ambulance matching logic for an emergency dispatch system",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "check:rank": "tsx server/scripts/rank-check.ts",
+    "check:readiness": "tsx server/scripts/readiness-check.ts",
+    "check": "npm run check:rank && npm run check:readiness"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
